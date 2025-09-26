@@ -1,0 +1,16 @@
+services:
+  magazyn-db:
+    image: postgres:15
+    container_name: magazyn-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: magazyn
+      POSTGRES_PASSWORD: magazyn
+      POSTGRES_DB: magazyn
+    ports:
+      - "5432:5432"
+    volumes:
+      - magazyn_pgdata:/var/lib/postgresql/data
+
+volumes:
+  magazyn_pgdata:
