@@ -261,13 +261,28 @@ export default function Page() {
       if (!selected) return;
       try {
         setBusy(true);
-        const fd = new FormData();
-        Array.from(files).forEach((f) => fd.append("photos", f));
-        const res = await fetch(`/api/products/${selected.id}/photos`, { method: "POST", body: fd });
-        if (!res.ok) throw new Error(await res.text());
-        const p = (await res.json()) as Product;
-        setSelected(p);
-        setItems((prev) => prev.map((x) => (x.id === p.id ? p : x)));
+
+        // Backend przyjmuje 1 plik na żądanie — wyślijmy po kolei.
+        const arr = Array.from(files);
+        for (const [i, file] of arr.entries()) {
+          const fd = new FormData();
+          fd.append("file", file); // << NAZWA POLA MUSI BYĆ "file"
+          // opcjonalnie:
+          // fd.append("role", "gallery");
+          // fd.append("isFront", String(i === 0));
+          // fd.append("order", String(i));
+
+          const res = await fetch(`/api/products/${selected.id}/photos`, {
+            method: "POST",
+            body: fd, // NIE ustawiaj ręcznie Content-Type
+          });
+          if (!res.ok) throw new Error(await res.text());
+
+          // API zwraca cały zaktualizowany produkt
+          const p = (await res.json()) as Product;
+          setSelected(p);
+          setItems((prev) => prev.map((x) => (x.id === p.id ? p : x)));
+        }
       } catch (e) {
         console.error(e);
         alert("Nie udało się przesłać zdjęć.");
@@ -724,28 +739,37 @@ export default function Page() {
                 <div className="mb-2 font-medium">Zdjęcia</div>
 
                 <label className="mb-3 inline-flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-neutral-50">
-                  <input
-                    type="file"
-                    multiple
-                    accept="image/*"
-                    className="hidden"
-                    onChange={(e) => e.target.files && onFilesUpload(e.target.files)}
-                  />
-                  + Dodaj zdjęcia
-                </label>
+  <input
+  type="file"
+  multiple
+  accept="image/*"
+  className="hidden"
+  onChange={async (e) => {
+    const files = e.target?.files;
+    if (files && files.length > 0) {
+      await onFilesUpload(files);
+    }
+    // wyczyść value, żeby ten sam wybór odpalał onChange kolejny raz
+    const input = e.currentTarget as HTMLInputElement | null;
+    if (input) input.value = "";
+  }}
+/>
+  + Dodaj zdjęcia
+</label>
 
-                {selected.photos.length === 0 ? (
-                  <div className="rounded-lg border p-4 text-sm text-neutral-500">Brak zdjęć.</div>
-                ) : (
+
+                {(selected?.photos?.length ?? 0) === 0 ? (
+  <div className="rounded-lg border p-4 text-sm text-neutral-500">Brak zdjęć.</div>
+) : (
                   <div className="grid grid-cols-2 gap-3">
-                    {selected.photos
-                      .slice()
-                      .sort((a, b) =>
-                        (a.isFront === b.isFront ? 0 : a.isFront ? -1 : 1) ||
-                        (a.order ?? 0) - (b.order ?? 0) ||
-                        (new Date(a.createdAt ?? 0).getTime() - new Date(b.createdAt ?? 0).getTime())
-                      )
-                      .map((ph) => (
+                    {(selected?.photos ?? [])
+  .slice()
+  .sort((a, b) =>
+    (a.isFront === b.isFront ? 0 : a.isFront ? -1 : 1) ||
+    (a.order ?? 0) - (b.order ?? 0) ||
+    (new Date(a.createdAt ?? 0).getTime() - new Date(b.createdAt ?? 0).getTime())
+  )
+  .map((ph) => (
                         <div
                           key={ph.id}
                           className={cn(
