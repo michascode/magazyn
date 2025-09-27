@@ -21,6 +21,8 @@ function pln(cents: number) {
 }
 const ALL_LABEL = "— wszystkie —";
 
+
+
 /* ---------------------- Multi dropdown z checkboxami ----------------------- */
 type MultiProps = {
   label: string;
@@ -99,6 +101,7 @@ export default function Page() {
 
   /* -------------------------- infinite scroll: ref -------------------------- */
   const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const loadingRef = useRef(false);
 
   /* -------------------------- helpers dla renderu -------------------------- */
   const frontPhoto = (p: Product) =>
@@ -119,49 +122,75 @@ export default function Page() {
 
   /* -------------------------- pobranie listy (API) ------------------------- */
   const loadProducts = useCallback(
-    async (mode: "reset" | "append" = "reset") => {
-      try {
-        const qs = buildQuery();
-        const res = await fetch(`/api/products?${qs}`, { cache: "no-store" });
-        if (!res.ok) throw new Error(await res.text());
-        const data = (await res.json()) as {
-          total: number;
-          items: Product[];
-          facets?: {
-            brands?: string[];
-            sizes?: string[];
-            conditions?: string[];
-            statuses?: ProductStatus[];
-          };
+  async (mode: "reset" | "append" = "reset") => {
+    try {
+      // blokujemy tylko dopinki, nie blokujemy pierwszego "reset"
+      if (mode === "append") {
+        if (loadingRef.current) return;
+        loadingRef.current = true;
+      }
+
+      const qs = buildQuery();
+      const res = await fetch(`/api/products?${qs}`, { cache: "no-store" });
+      if (!res.ok) throw new Error(await res.text());
+
+      const data = (await res.json()) as {
+        total: number;
+        items: Product[];
+        facets?: {
+          brands?: string[];
+          sizes?: string[];
+          conditions?: string[];
+          statuses?: ProductStatus[];
         };
+      };
 
-        if (mode === "reset") {
-          setItems(data.items);
-        } else {
-          setItems((prev) => [...prev, ...data.items]);
-        }
+      // Ustawiamy wszystko "atomowo": nowy stan listy + hasMore wyliczony z nowej tablicy
+      setItems((prev) => {
+        const next = mode === "reset" ? data.items : [...prev, ...data.items];
         setTotal(data.total);
+        setHasMore(next.length < data.total);
 
-        const used = mode === "append" ? items.length + data.items.length : data.items.length;
-        setHasMore(used < data.total);
-
+        // facety – zawsze aktualizuj z odpowiedzi
         setBrandsOptions(data.facets?.brands ?? []);
         setSizesOptions(data.facets?.sizes ?? []);
         setConditionOptions(data.facets?.conditions ?? []);
         setStatusesOptions(data.facets?.statuses ?? STATUSES);
-      } catch (e) {
-        console.error(e);
-        alert("Nie udało się pobrać listy produktów.");
-      }
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [buildQuery]
-  );
+
+        return next;
+      });
+    } catch (e) {
+      console.error(e);
+      alert("Nie udało się pobrać listy produktów.");
+    } finally {
+      if (mode === "append") loadingRef.current = false;
+    }
+  },
+  [buildQuery]
+);
+
+
+
 
   /* reset/zmiana filtrów => pobieraj od nowa */
   useEffect(() => {
-    loadProducts("reset");
-  }, [loadProducts]);
+  if (!sentinelRef.current) return;
+  const el = sentinelRef.current;
+
+  const obs = new IntersectionObserver(
+    (entries) => {
+      const first = entries[0];
+      if (first.isIntersecting && hasMore && !loadingRef.current) {
+        setPage((p) => p + 1);
+      }
+    },
+    { rootMargin: "300px" }
+  );
+
+  obs.observe(el);
+  return () => obs.disconnect();
+}, [hasMore]);
+
 
   /* ------------------------------ infinite scroll -------------------------- */
   useEffect(() => {
@@ -192,24 +221,27 @@ export default function Page() {
   const openProductCard = (p: Product) => setSelected(p);
 
   const createProduct = useCallback(async () => {
-    try {
-      setBusy(true);
-      const res = await fetch("/api/products", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ title: "Nowy produkt", status: "NA_MAGAZYNIE" }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const p = (await res.json()) as Product;
-      await loadProducts("reset");
-      openProductCard(p);
-    } catch (e) {
-      console.error(e);
-      alert("Nie udało się utworzyć produktu.");
-    } finally {
-      setBusy(false);
-    }
-  }, [loadProducts]);
+  try {
+    setBusy(true);
+    const res = await fetch("/api/products", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "Nowy produkt", status: "NA_MAGAZYNIE" }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const p = (await res.json()) as Product;
+
+    setPage(1);                   // <--- żeby lista nie była „pusta” na dalszych stronach
+    await loadProducts("reset");
+    openProductCard(p);
+  } catch (e) {
+    console.error(e);
+    alert("Nie udało się utworzyć produktu.");
+  } finally {
+    setBusy(false);
+  }
+}, [loadProducts]);
+
 
   const saveProduct = useCallback(
     async (patch: Partial<Product>) => {
@@ -237,46 +269,58 @@ export default function Page() {
   );
 
   const deleteProduct = useCallback(
-    async (id: string) => {
-      if (!confirm("Usunąć produkt?")) return;
-      try {
-        setBusy(true);
-        const res = await fetch(`/api/products/${id}`, { method: "DELETE" });
-        if (!res.ok) throw new Error(await res.text());
-        setSelected(null);
-        await loadProducts("reset");
-      } catch (e) {
-        console.error(e);
-        alert("Nie udało się usunąć.");
-      } finally {
-        setBusy(false);
-      }
-    },
-    [loadProducts]
-  );
+  async (id: string) => {
+    if (!confirm("Usunąć produkt?")) return;
+    try {
+      setBusy(true);
+      const res = await fetch(`/api/products/${id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(await res.text());
+      setSelected(null);
+setPage(1);
+await loadProducts("reset");
+
+    } catch (e) {
+      console.error(e);
+      alert("Nie udało się usunąć.");
+    } finally {
+      setBusy(false);
+    }
+  },
+  [loadProducts]
+);
+
 
   /* ----------------------------- Zdjęcia produktu -------------------------- */
-  const onFilesUpload = useCallback(
-    async (files: FileList) => {
-      if (!selected) return;
-      try {
-        setBusy(true);
-        const fd = new FormData();
-        Array.from(files).forEach((f) => fd.append("photos", f));
-        const res = await fetch(`/api/products/${selected.id}/photos`, { method: "POST", body: fd });
-        if (!res.ok) throw new Error(await res.text());
-        const p = (await res.json()) as Product;
-        setSelected(p);
-        setItems((prev) => prev.map((x) => (x.id === p.id ? p : x)));
-      } catch (e) {
-        console.error(e);
-        alert("Nie udało się przesłać zdjęć.");
-      } finally {
-        setBusy(false);
-      }
-    },
-    [selected]
-  );
+  // było: const onFilesUpload = useCallback(async (files: FileList) => {
+// było: async (files: FileList)
+const onFilesUpload = useCallback(
+  async (files: File[]) => {
+    if (!selected) return;
+    try {
+      setBusy(true);
+      const fd = new FormData();
+      for (const f of files) fd.append("photos", f);
+
+      const res = await fetch(`/api/products/${selected.id}/photos`, {
+        method: "POST",
+        body: fd, // NIE ustawiaj ręcznie Content-Type
+      });
+      if (!res.ok) throw new Error(await res.text());
+
+      const p = (await res.json()) as Product;
+      setSelected(p);
+      setItems((prev) => prev.map((x) => (x.id === p.id ? p : x)));
+    } catch (e) {
+      console.error(e);
+      alert("Nie udało się przesłać zdjęć.");
+    } finally {
+      setBusy(false);
+    }
+  },
+  [selected]
+);
+
+
 
   const setFront = useCallback(
     async (photoId: string) => {
@@ -723,16 +767,30 @@ export default function Page() {
               <div className="mt-6">
                 <div className="mb-2 font-medium">Zdjęcia</div>
 
-                <label className="mb-3 inline-flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-neutral-50">
-                  <input
-                    type="file"
-                    multiple
-                    accept="image/*"
-                    className="hidden"
-                    onChange={(e) => e.target.files && onFilesUpload(e.target.files)}
-                  />
-                  + Dodaj zdjęcia
-                </label>
+                
+  <label className="mb-3 inline-flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-neutral-50">
+  <input
+    type="file"
+    multiple
+    accept="image/*"
+    className="hidden"
+    onChange={async (e) => {
+      const input = e.currentTarget;
+      const list = e.target.files;
+      if (!list || list.length === 0) return;
+
+      // KLUCZOWE: robimy KOPIĘ do zwykłej tablicy File,
+      // żeby po asynchronii nie zniknęło:
+      const files = Array.from(list);
+
+      await onFilesUpload(files);
+      input.value = ""; // czyść dopiero po await
+    }}
+  />
+  + Dodaj zdjęcia
+</label>
+
+
 
                 {selected.photos.length === 0 ? (
                   <div className="rounded-lg border p-4 text-sm text-neutral-500">Brak zdjęć.</div>

@@ -6,7 +6,9 @@
     "dev": "next dev --turbopack",
     "build": "next build --turbopack",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "db:seed": "node prisma/seed.mjs",
+    "dev:clean-uploads": "curl -X POST http://localhost:3000/api/dev/cleanup-uploads"
   },
   "dependencies": {
     "@prisma/client": "^6.16.2",

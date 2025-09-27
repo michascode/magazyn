@@ -1,63 +1,82 @@
+// src/app/api/products/[id]/photos/[photoId]/route.ts
 import { NextResponse } from "next/server";
+import path from "node:path";
+import fs from "node:fs/promises";
 import { prisma } from "@/lib/prisma";
 
-// PATCH /api/products/:id/photos/:photoId
-// body: { role: 'front'|'back'|'measure1'|'measure2'|'extra' }
-export async function PATCH(
-  req: Request,
-  { params }: { params: { id: string; photoId: string } }
-) {
-  const { id: productId, photoId } = params;
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+async function getProductWithPhotos(productId: string) {
+  return prisma.product.findUnique({
+    where: { id: productId },
+    include: {
+      photos: {
+        orderBy: [{ isFront: "desc" }, { order: "asc" }, { createdAt: "asc" }],
+      },
+    },
+  });
+}
+
+export async function PATCH(req: Request, ctx: any) {
+  const { id: productId, photoId } = await ctx.params;
 
   try {
-    const body = await req.json().catch(() => ({}));
-    const role = typeof body.role === "string" ? body.role : undefined;
-    if (!role) return NextResponse.json({ error: "Missing role" }, { status: 400 });
+    const body = await req.json().catch(() => ({} as any));
 
-    const photo = await prisma.photo.findUnique({ where: { id: photoId } });
-    if (!photo || photo.productId !== productId) {
-      return NextResponse.json({ error: "Photo not found" }, { status: 404 });
+    // Na dziś obsługujemy tylko ustawianie frontu
+    if (body?.isFront === true) {
+      await prisma.$transaction([
+        // wyłącz front na pozostałych
+        prisma.photo.updateMany({
+          where: { productId, NOT: { id: photoId } },
+          data: { isFront: false },
+        }),
+        // ustaw front na wskazanym
+        prisma.photo.update({
+          where: { id: photoId },
+          data: { isFront: true },
+        }),
+      ]);
+
+      const product = await getProductWithPhotos(productId);
+      return NextResponse.json(product, { status: 200 });
     }
 
-    if (role === "front") {
-      await prisma.photo.updateMany({
-        where: { productId, role: "front", NOT: { id: photoId } },
-        data: { role: "extra" },
-      });
-    }
-
-    const updated = await prisma.photo.update({
-      where: { id: photoId },
-      data: { role },
-    });
-
-    return NextResponse.json(updated, { status: 200 });
-  } catch (e) {
-    console.error(e);
-    return NextResponse.json({ error: "Server error" }, { status: 500 });
+    return NextResponse.json({ error: "Missing or invalid body." }, { status: 400 });
+  } catch (err) {
+    console.error(err);
+    return NextResponse.json({ error: "Update failed" }, { status: 500 });
   }
 }
 
-// DELETE /api/products/:id/photos/:photoId
-export async function DELETE(
-  _req: Request,
-  { params }: { params: { id: string; photoId: string } }
-) {
-  const { id: productId, photoId } = params;
+export async function DELETE(_req: Request, ctx: any) {
+  const { id: productId, photoId } = await ctx.params;
 
   try {
+    // znajdź zdjęcie, żeby usunąć też plik
     const photo = await prisma.photo.findUnique({ where: { id: photoId } });
-    if (!photo || photo.productId !== productId) {
+    if (!photo) {
       return NextResponse.json({ error: "Photo not found" }, { status: 404 });
     }
 
+    // skasuj rekord
     await prisma.photo.delete({ where: { id: photoId } });
 
-    // (opcjonalnie) fizyczne usunięcie pliku z dysku/S3 — do dodania tu
+    // Kasuj plik na dysku (jeśli istnieje)
+    if (photo.url && photo.url.startsWith("/uploads/")) {
+      const absPath = path.join(process.cwd(), "public", photo.url);
+      try {
+        await fs.unlink(absPath);
+      } catch {
+        // plik mógł nie istnieć — ignorujemy
+      }
+    }
 
-    return NextResponse.json({ ok: true }, { status: 200 });
-  } catch (e) {
-    console.error(e);
-    return NextResponse.json({ error: "Server error" }, { status: 500 });
+    const product = await getProductWithPhotos(productId);
+    return NextResponse.json(product, { status: 200 });
+  } catch (err) {
+    console.error(err);
+    return NextResponse.json({ error: "Delete failed" }, { status: 500 });
   }
 }
